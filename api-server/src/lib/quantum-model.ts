@@ -1,26 +1,19 @@
 import { logger } from "./logger";
 
-interface Vocabulary {
-  wordToIndex: Map<string, number>;
-  indexToWord: Map<number, string>;
-  size: number;
-}
-
 interface ModelMemory {
   ngramCounts: Map<string, Map<string, number>>;
-  vocab: Vocabulary;
+  vocab: Map<string, number>;
   totalSamples: number;
   lastTrainedAt: Date | null;
 }
 
 const CONTEXT_SIZE = 3;
-const UNK_TOKEN = "<UNK>";
-const START_TOKEN = "<START>";
 const END_TOKEN = "<END>";
+const START_TOKEN = "<START>";
 
 const memory: ModelMemory = {
   ngramCounts: new Map(),
-  vocab: { wordToIndex: new Map(), indexToWord: new Map(), size: 0 },
+  vocab: new Map(),
   totalSamples: 0,
   lastTrainedAt: null,
 };
@@ -33,242 +26,214 @@ function tokenize(text: string): string[] {
     .filter((w) => w.length > 0);
 }
 
-function addToVocab(word: string): void {
-  if (!memory.vocab.wordToIndex.has(word)) {
-    const idx = memory.vocab.size;
-    memory.vocab.wordToIndex.set(word, idx);
-    memory.vocab.indexToWord.set(idx, word);
-    memory.vocab.size++;
-  }
-}
-
 function updateNgramCounts(tokens: string[]): void {
-  const sequence = [START_TOKEN, START_TOKEN, START_TOKEN, ...tokens, END_TOKEN];
-  addToVocab(START_TOKEN);
-  addToVocab(END_TOKEN);
-  for (const token of tokens) addToVocab(token);
-
-  for (let i = CONTEXT_SIZE; i < sequence.length; i++) {
-    const context = sequence.slice(i - CONTEXT_SIZE, i).join(" ");
-    const nextWord = sequence[i]!;
-    if (!memory.ngramCounts.has(context)) memory.ngramCounts.set(context, new Map());
-    const contextMap = memory.ngramCounts.get(context)!;
-    contextMap.set(nextWord, (contextMap.get(nextWord) ?? 0) + 1);
+  const seq = [START_TOKEN, START_TOKEN, START_TOKEN, ...tokens, END_TOKEN];
+  for (const t of tokens) memory.vocab.set(t, (memory.vocab.get(t) ?? 0) + 1);
+  for (let i = CONTEXT_SIZE; i < seq.length; i++) {
+    const ctx = seq.slice(i - CONTEXT_SIZE, i).join(" ");
+    const nxt = seq[i]!;
+    if (!memory.ngramCounts.has(ctx)) memory.ngramCounts.set(ctx, new Map());
+    const m = memory.ngramCounts.get(ctx)!;
+    m.set(nxt, (m.get(nxt) ?? 0) + 1);
   }
 }
 
 export function trainOnText(texts: string[]): number {
-  let samplesProcessed = 0;
+  let n = 0;
   for (const text of texts) {
-    if (!text || text.trim().length === 0) continue;
+    if (!text?.trim()) continue;
     const tokens = tokenize(text);
     if (tokens.length < 2) continue;
     updateNgramCounts(tokens);
-    samplesProcessed++;
+    n++;
   }
-  memory.totalSamples += samplesProcessed;
+  memory.totalSamples += n;
   memory.lastTrainedAt = new Date();
-  logger.info({ samplesProcessed, totalSamples: memory.totalSamples }, "Model trained");
-  return samplesProcessed;
+  logger.info({ samplesProcessed: n, totalSamples: memory.totalSamples }, "Model trained");
+  return n;
 }
 
-function sampleFromDistribution(counts: Map<string, number>): string {
-  const total = Array.from(counts.values()).reduce((a, b) => a + b, 0);
-  let random = Math.random() * total;
-  for (const [word, count] of counts.entries()) {
-    random -= count;
-    if (random <= 0) return word;
-  }
-  return Array.from(counts.keys())[0] ?? UNK_TOKEN;
-}
+// ─── Yanıt Havuzu ─────────────────────────────────────────────────────────────
 
-function generateFromContext(contextTokens: string[], maxTokens: number): string {
-  const generated: string[] = [];
-  let context = [START_TOKEN, START_TOKEN, START_TOKEN];
-  if (contextTokens.length > 0) {
-    context = [...context.slice(Math.max(0, context.length - CONTEXT_SIZE + contextTokens.length)), ...contextTokens.slice(-CONTEXT_SIZE)].slice(-CONTEXT_SIZE);
-  }
-  for (let i = 0; i < maxTokens; i++) {
-    const contextKey = context.join(" ");
-    const nextWordCounts = memory.ngramCounts.get(contextKey);
-    if (!nextWordCounts || nextWordCounts.size === 0) {
-      const fallbackCounts = memory.ngramCounts.get(context.slice(1).join(" "));
-      if (!fallbackCounts || fallbackCounts.size === 0) break;
-      const next = sampleFromDistribution(fallbackCounts);
-      if (next === END_TOKEN) break;
-      generated.push(next);
-      context = [...context.slice(1), next];
-    } else {
-      const next = sampleFromDistribution(nextWordCounts);
-      if (next === END_TOKEN) break;
-      generated.push(next);
-      context = [...context.slice(1), next];
-    }
-  }
-  return generated.join(" ");
-}
-
-// ─── Zengin Türkçe yanıt havuzu ──────────────────────────────────────────────
-
-const RESPONSES: Record<string, string[]> = {
+const R: Record<string, string[]> = {
   greeting: [
-    "Merhaba! Ben QuantumAI. Size nasıl yardımcı olabilirim?",
-    "Selam! Bugün ne öğrenmek ya da keşfetmek istersiniz?",
-    "Merhaba! Sorularınızı duymaktan memnuniyet duyarım.",
-    "Günaydın! QuantumAI olarak her türlü sorunuzda yanınızdayım.",
+    "Merhaba! Ben QuantumAI. Bugün size nasıl yardımcı olabilirim?",
+    "Selam! Herhangi bir konuda soru sorabilir ya da sohbet edebilirsiniz.",
+    "Hoş geldiniz! Ne öğrenmek veya keşfetmek istersiniz?",
+    "Merhaba! Merak ettiğiniz her şeyi benimle paylaşabilirsiniz.",
   ],
   farewell: [
-    "Görüşmek üzere! İyi günler dilerim.",
-    "Hoşça kalın! Başka sorularınız olursa buradayım.",
-    "Güle güle! Her zaman yardımcı olmaktan memnuniyet duyarım.",
+    "Görüşmek üzere! Başka sorularınız olursa buradayım.",
+    "Hoşça kalın! Yardımcı olabildiğime sevindim.",
+    "Güle güle! Her zaman yardıma hazırım.",
   ],
   thanks: [
-    "Ne demek, her zaman buradayım!",
-    "Rica ederim! Başka sorularınız olursa çekinmeyin.",
-    "Yardımcı olabildiğime sevindim! Başka bir şey var mı?",
-    "Teşekkür ederim, güzel sözleriniz için. Yardımcı olabilmek benim için büyük bir zevk!",
+    "Ne demek! Başka sorularınız olursa çekinmeyin.",
+    "Rica ederim, yardımcı olabildiğime sevindim!",
+    "Teşekkür ederim. Sohbet etmekten memnuniyet duydum!",
+    "Her zaman! Aklınıza takılan başka bir şey var mı?",
+  ],
+  affirmative: [
+    "Harika! Devam edelim o zaman.",
+    "Mükemmel! Başka eklemek istediğiniz bir şey var mı?",
+    "Anlıyorum, devam edin lütfen.",
+  ],
+  negative: [
+    "Anladım, peki başka nasıl yardımcı olabilirim?",
+    "Tamam, farklı bir konudan bahsetmek ister misiniz?",
+    "Sorun değil, başka bir konuda yardımcı olmamı ister misiniz?",
   ],
   who: [
-    "Ben QuantumAI — Türkçe dil destekli bir yapay zeka asistanıyım. Sohbet geçmişinizden öğrenerek yanıtlarımı geliştiriyorum.",
-    "QuantumAI olarak hizmetinizdeyim. Quantum n-gram modeli ile güçlendirilmiş, Türkçe konuşan bir AI asistanıyım.",
-    "Adım QuantumAI. Sorularınıza yardımcı olmak, bilgi paylaşmak ve sohbet etmek için buradayım.",
+    "Ben **QuantumAI** — Türkçe dil destekli bir yapay zeka asistanıyım. Sohbet geçmişinizden öğrenerek yanıtlarımı sürekli geliştiriyorum.",
+    "QuantumAI olarak hizmetinizdeyim. n-gram tabanlı bir dil modeli kullanarak konuşmalardan öğreniyor ve yanıt üretiyorum.",
+    "Adım QuantumAI. Türkçe soruları anlayıp yanıtlamak, bilgi paylaşmak ve sohbet etmek için buradayım.",
   ],
-  technology: [
-    "Teknoloji, modern dünyamızı şekillendiren en güçlü araçlardan biri. Yapay zeka, bulut bilişim ve nesnelerin interneti gibi alanlar hız kesmeden gelişiyor. Bu konuda özellikle merak ettiğiniz bir alan var mı?",
-    "Günümüz teknolojisi inanılmaz bir hızla ilerliyor. Yazılım geliştirmeden kuantum bilgisayarlara kadar pek çok alanda devrimler yaşanıyor. Hangi teknolojiyle ilgileniyorsunuz?",
-    "Teknoloji dünyası çok geniş bir alan. Yapay zeka, siber güvenlik, mobil uygulama geliştirme, blockchain — bunların hangisi hakkında konuşmak istersiniz?",
+  what_can_you_do: [
+    "Pek çok konuda yardımcı olabilirim:\n• Bilgi soruları (bilim, tarih, teknoloji...)\n• Programlama ve teknik sorular\n• Türkçe yazma ve ifade\n• Sohbet ve fikir alışverişi\n\nHangi konuyla başlamak istersiniz?",
+    "Yapabileceğim şeyler arasında şunlar var:\n• Sorularınızı yanıtlamak\n• Konuları açıklamak\n• Fikir üretmek ve tartışmak\n• Metin yazmak veya düzeltmek\n\nNe yapmamı istersiniz?",
   ],
   ai: [
-    "Yapay zeka, makine öğrenimi ve derin öğrenme yöntemleriyle büyük veri setlerinden örüntüler öğrenir. GPT gibi dil modelleri, milyarlarca metin örneği üzerinde eğitilerek insan benzeri metin üretebilir hale gelmiştir.",
-    "Yapay zekanın üç temel dalı var: dar yapay zeka (belirli görevlerde uzman), genel yapay zeka (insan düzeyinde) ve süper yapay zeka (insanı aşan). Bugün elimizdeki sistemler büyük ölçüde dar yapay zeka kategorisinde.",
-    "Makine öğrenmesi, bilgisayarlara açıkça programlanmadan öğrenme yeteneği kazandırır. Gözetimli öğrenme, gözetimsiz öğrenme ve pekiştirmeli öğrenme olmak üzere üç temel yöntemi vardır.",
+    "Yapay zeka (YZ), bilgisayarların insan benzeri görevleri yerine getirmesini sağlayan teknolojiler bütünüdür. Makine öğrenimi, derin öğrenme ve doğal dil işleme gibi alt dalları vardır.\n\nGünümüzde GPT-4, Gemini ve Claude gibi büyük dil modelleri (LLM) metin anlama ve üretmede insan düzeyine yaklaşmıştır.",
+    "Makine öğrenmesinin temel türleri:\n• **Gözetimli öğrenme** — etiketli verilerle eğitim\n• **Gözetimsiz öğrenme** — verideki gizli örüntüleri keşfetme\n• **Pekiştirmeli öğrenme** — ödül/ceza sistemiyle deneyimden öğrenme\n\nHangi konuyu daha ayrıntılı ele alalım?",
+    "Transformer mimarisi, modern YZ'nin temelini oluşturuyor. 2017'de Google'ın 'Attention Is All You Need' makalesiyle tanıtılan bu mimari; BERT, GPT ve benzeri modellerin altyapısını oluşturur.",
   ],
-  science: [
-    "Bilim, gözlem ve deneye dayalı bilgi üretme sürecidir. Fizikten biyolojiye, kimyadan astronomiye kadar geniş bir yelpazede insanlığın anlayışını genişletir. Hangi bilim dalı sizi daha çok ilgilendiriyor?",
-    "Bilimsel yöntem; hipotez kurma, deney tasarlama, veri toplama ve sonuç çıkarma adımlarını içerir. Bu döngü, sayısız keşfin temelini oluşturmaktadır.",
-    "Modern bilim, disiplinler arası çalışmaları giderek daha fazla benimsiyor. Biyoinformatik, nöromühendislik gibi alanlar farklı bilimlerin kesişim noktalarında doğuyor.",
-  ],
-  math: [
-    "Matematik, evrenin dili olarak kabul edilir. Cebir, geometri, hesap, istatistik ve daha pek çok dalıyla hem teorik hem de uygulamalı bilimde vazgeçilmez bir rol oynar.",
-    "Matematikte problem çözmenin püf noktası: önce problemi iyice anlamak, sonra onu daha küçük parçalara bölmek, ardından her parçayı ayrı ayrı çözmek ve son olarak çözümleri birleştirmek.",
-    "Sayı teorisinden topolojiye, olasılıktan diferansiyel denklemlere kadar matematiğin her dalı kendi içinde derin ve büyüleyici bir evren barındırır.",
-  ],
-  history: [
-    "Tarih, geçmişteki insan deneyimlerini inceler ve bize bugünü anlamak için bağlam sağlar. Antik uygarlıklardan modern dönemlere uzanan bu yolculuk, insanlığın nasıl şekillendiğini gösterir.",
-    "Tarih yazımı (historiografi) sürekli gelişiyor. Aynı olaylar bile farklı kaynaklardan ve farklı perspektiflerden incelendiğinde çok boyutlu bir tablo ortaya çıkabiliyor.",
-    "Tarihin tekrarlandığı söylenir. Geçmiş dönemlerdeki siyasi, ekonomik ve sosyal krizleri incelemek, günümüzdeki benzer süreçleri anlamlandırmada büyük yardım sağlar.",
-  ],
-  health: [
-    "Sağlıklı bir yaşam için dengeli beslenme, düzenli egzersiz, yeterli uyku ve stres yönetimi büyük önem taşır. Bu dört temel üzerine inşa edilen bir yaşam tarzı, pek çok hastalığın önlenmesine yardımcı olur.",
-    "Ruh sağlığı, fiziksel sağlık kadar önemlidir. Düzenli meditasyon, sosyal bağlantılar ve hobiler genel iyilik halinizi önemli ölçüde artırabilir.",
-    "Sağlık konularında bir doktora danışmak her zaman en doğru yoldur. Ancak genel sağlık bilgisi edinmek ve bilinçli alışkanlıklar geliştirmek için yardımcı olabilirim.",
-  ],
-  food: [
-    "Türk mutfağı, Orta Asya'dan Akdeniz'e uzanan zengin bir kültürel mirasın ürünüdür. Kebaplar, mezeler, börekler ve tatlılarla dünyanın en çeşitli mutfaklarından birini oluşturur.",
-    "Beslenme bilimi sürekli gelişiyor. Bugün bildiğimiz şu: tam tahıllar, sebzeler, meyveler, sağlıklı yağlar ve yeterli protein içeren dengeli bir diyet genel sağlığı destekler.",
-    "Yemek pişirmek hem bir sanat hem de bir bilimdir. Doğru malzemeleri doğru teknikle bir araya getirmek, lezzetli ve besleyici yemekler ortaya çıkarır.",
-  ],
-  sports: [
-    "Düzenli spor yapmak hem fiziksel hem de zihinsel sağlığa büyük katkı sağlar. Haftada en az 150 dakika orta yoğunlukta aerobik egzersiz önerilir.",
-    "Türkiye'de futbol tartışmasız en popüler spor. Ancak basketbol, voleybol, güreş ve atletizm de önemli başarılar elde edilen branşlar arasında yer alıyor.",
-    "Spor sadece fiziksel bir aktivite değil; disiplin, takım ruhu ve azim gibi değerleri de öğretir. Hangi sporla ilgileniyorsunuz?",
-  ],
-  music: [
-    "Müzik, evrensel bir dil olarak tüm kültürlerde insanları bir araya getirir. Türk müziği ise makamsal yapısı ve zengin ritim anlayışıyla dünya müziğinde ayrı bir yere sahiptir.",
-    "Müziğin insan psikolojisi üzerindeki etkileri bilimsel olarak kanıtlanmıştır. Doğru müzikle çalışmak, konsantrasyonu artırabilir ve stresi azaltabilir.",
-    "Klasikten caza, rock'tan elektronik müziğe kadar her türün kendine özgü tarihi ve kültürel bağlamı vardır. Hangi müzik türünü tercih ediyorsunuz?",
-  ],
-  nature: [
-    "Doğa, milyarlarca yıllık evrim sürecinin mükemmel bir ürünüdür. Ekosistemlerin karmaşık yapısı, her canlının birbiriyle nasıl bağlantılı olduğunu ortaya koyar.",
-    "İklim değişikliği, günümüzün en büyük çevre sorunlarından biri. Yenilenebilir enerji, sürdürülebilir tarım ve karbon azaltımı bu soruna çözüm üretmede kritik öneme sahip.",
-    "Türkiye'nin biyoçeşitlilik açısından inanılmaz zengin bir coğrafyası var. Dağlardan ovalara, kıyılardan orman alanlarına kadar pek çok farklı ekosistemi barındırıyor.",
-  ],
-  education: [
-    "Eğitim, bireyin ve toplumun gelişiminde en temel araçlardan biridir. Aktif öğrenme, eleştirel düşünme ve yaratıcılığı teşvik eden eğitim yaklaşımları en etkili sonuçları veriyor.",
-    "Günümüzde online eğitim platformları sayesinde dünyanın herhangi bir yerinden kaliteli içeriklere erişmek mümkün. Sürekli öğrenme (lifelong learning) modern çağın zorunluluğu haline geldi.",
-    "Bir konuyu öğrenmenin en iyi yolu onu başkasına öğretmektir. Feynman tekniği olarak bilinen bu yöntemde, öğrendiğiniz şeyi basit bir dille açıklamaya çalışırsınız.",
+  technology: [
+    "Teknoloji dünyası son yıllarda inanılmaz bir hız kazandı:\n• **Yapay Zeka** — sağlık, eğitim, finans...\n• **Kuantum bilgisayarlar** — kriptografi ve simülasyon\n• **Artırılmış gerçeklik** — iş ve eğlence\n• **Biyoteknoloji** — gen düzenleme, kişiselleştirilmiş tıp\n\nHangisi sizi en çok ilgilendiriyor?",
+    "Günümüzde en çok konuşulan teknolojiler arasında yapay zeka, blockchain, nesnelerin interneti (IoT) ve 5G yer alıyor. Bu teknolojiler birbirleriyle entegre olarak hayatımızı köklü biçimde değiştiriyor.",
   ],
   programming: [
-    "Programlama öğrenmek için önce temel kavramları (değişkenler, döngüler, koşullar, fonksiyonlar) sağlam öğrenmek gerekir. Python, başlangıç için ideal bir dil: sade sözdizimi ve geniş kütüphane ekosistemi ile.",
-    "Yazılım geliştirmede en önemli beceri problem çözme yeteneğidir. Bir problemi küçük parçalara bölmek, her parçayı ayrıca çözmek ve sonra birleştirmek temel yaklaşımdır.",
-    "Modern web geliştirme için HTML/CSS, JavaScript ve bir framework (React, Vue, Angular) öğrenmek iyi bir başlangıç noktası. Backend için Node.js, Python veya Go popüler tercihler arasında.",
+    "Programlamaya başlamak için önerilerim:\n1. **Python** — sade sözdizimi, geniş ekosistem\n2. **JavaScript** — web geliştirme için ideal\n3. **Rust** — sistem programlama, güvenlik\n\nTemel kavramları (değişken, döngü, fonksiyon, nesne) öğrendikten sonra küçük projeler yapmak en etkili yöntem.",
+    "Web geliştirme yol haritası:\n• **Frontend:** HTML → CSS → JavaScript → React/Vue\n• **Backend:** Node.js/Python → REST API → Veritabanı\n• **DevOps:** Git → Docker → CI/CD\n\nHangi alanda uzmanlaşmak istiyorsunuz?",
+    "Algoritma ve veri yapıları, güçlü bir programcının olmazsa olmazı. Dizi, bağlı liste, ağaç, graf ve hash tablosu gibi temel yapıları öğrenmek problem çözme yeteneğinizi katlar.",
+  ],
+  science: [
+    "Bilim, sistematik gözlem ve deneye dayalı bilgi üretme sürecidir. Evrenin işleyişini anlamak için fizik, kimya, biyoloji ve astronominin birlikte çalışması gerekir.\n\nBelirli bir bilim dalını merak ediyor musunuz?",
+    "Kuantum mekaniği, atom altı dünyayı açıklayan devrimsel bir teori. Süperpozisyon, dolanıklık ve tünel etkisi gibi olgular klasik fiziğin ötesinde bir gerçeklik sunar. Schrödinger'in kedisi bu kavramları anlatmak için kullanılan ünlü düşünce deneyidir.",
+    "Evrenin yaşı yaklaşık **13,8 milyar yıl**. Büyük Patlama'dan sonra oluşan madde, zamanla galaksileri, yıldızları ve gezegenleri oluşturdu. Güneş Sistemi'nde yaklaşık 4,6 milyar yıl önce oluştu.",
+  ],
+  math: [
+    "Matematiğin temel dalları:\n• **Cebir** — denklemler ve değişkenler\n• **Geometri** — şekil ve uzay\n• **Analiz** — türev ve integral\n• **İstatistik** — veri analizi\n\nHangi konuda yardıma ihtiyacınız var?",
+    "Olasılık teorisi günlük hayatta çok önemli. Bir olayın gerçekleşme olasılığı 0 ile 1 arasında değer alır. Bağımsız olayların birlikte gerçekleşme olasılığı, ayrı ayrı olasılıklarının çarpımına eşittir.",
+    "Asal sayılar, matematiğin en büyülü konularından biri. Sonsuz sayıda asal sayı olduğu M.Ö. 300'de Öklid tarafından kanıtlandı. Günümüzde bulunan en büyük asal sayı **milyonlarca basamaktan** oluşuyor!",
+  ],
+  history: [
+    "Tarih, geçmişteki insan deneyimlerini anlayarak geleceğe ışık tutar. Osmanlı İmparatorluğu'nun yıkılışından Türkiye Cumhuriyeti'nin kuruluşuna uzanan süreç, modern Türk kimliğini şekillendiren kritik bir dönemdir.",
+    "Birinci Dünya Savaşı (1914-1918), Avrupa'nın siyasi haritasını kökten değiştirdi. Osmanlı, Habsburg ve Rus imparatorluklarının çöküşüne zemin hazırladı. Bu savaş, milliyetçilik akımının zirveye ulaştığı bir dönemi simgeler.",
+    "Tarihin büyük dönüm noktaları arasında matbaanın icadı (1440), Sanayi Devrimi (1760) ve dijital devrim (1990'lar) sayılabilir. Her biri insanlığın bilgi üretme ve paylaşma biçimini köklü olarak değiştirdi.",
+  ],
+  health: [
+    "Sağlıklı yaşamın 4 temel direği:\n1. **Dengeli beslenme** — tam tahıl, sebze, meyve, protein\n2. **Düzenli egzersiz** — haftada 150 dk orta yoğunluk\n3. **Yeterli uyku** — 7-9 saat kaliteli uyku\n4. **Stres yönetimi** — meditasyon, sosyal bağlar\n\nHangi konuyu daha ayrıntılı konuşalım?",
+    "Ruh sağlığı, fiziksel sağlık kadar önemli. Kaygı ve depresyon gibi durumlar yaygın olup etkili tedavileri mevcut. Destek almaktan çekinmemek büyük cesaret ister. Bir uzmana başvurmak her zaman en doğru adım.",
+  ],
+  food: [
+    "Türk mutfağı dünyanın en zengin mutfaklarından biri:\n• **Kebaplar** — Adana, Urfa, İskender\n• **Mezeler** — hummus, haydari, cacık\n• **Tatlılar** — baklava, kadayıf, lokum\n• **İçecekler** — çay, ayran, şalgam\n\nHangi yemek hakkında bilgi almak istersiniz?",
+    "Akdeniz diyeti dünyada en çok önerilen beslenme tarzlarından biri. Zeytinyağı, balık, sebze ve tam tahıl ağırlıklı bu diyet, kalp hastalığı riskini azalttığı kanıtlanmış.",
+  ],
+  sports: [
+    "Türkiye'de en popüler sporlar: futbol, basketbol, voleybol, güreş ve atletizm. Özellikle güreşte Türkiye, dünya ve olimpiyat şampiyonları yetiştirmiş tarihi bir güç.",
+    "Düzenli egzersizin faydaları:\n• Kardiyovasküler sağlık\n• Kemik yoğunluğu artışı\n• Zihinsel sağlık ve stres azaltma\n• Enerji seviyesi yükselmesi\n• Uyku kalitesi artışı\n\nHaftada en az 3 gün aktif olmayı hedefleyin!",
+  ],
+  music: [
+    "Müzik, insanlığın en evrensel dili. Türk müziği ise makam sistemi, saz ailesi ve ozanlık geleneğiyle özgün bir kültürel miras taşır. Halk müziğinden Türk sanat müziğine, arabeskten pop'a geniş bir yelpazesi var.",
+    "Müziğin bilimsel faydaları kanıtlanmış:\n• Konsantrasyon artışı (klasik müzik)\n• Stres azaltma (yavaş tempo)\n• Motivasyon yükseltme (hızlı ritim)\n• Yaratıcılık geliştirme\n\nSiz hangi müzik türünü tercih ediyorsunuz?",
+  ],
+  nature: [
+    "Türkiye, biyoçeşitlilik açısından inanılmaz zengin bir ülke. Toros dağlarından Karadeniz ormanlarına, Ege kıyılarından İç Anadolu stepine kadar birbirinden farklı ekosistemler barındırıyor.",
+    "İklim değişikliği acil eylem gerektiren küresel bir kriz. Karbondioksit emisyonları azaltmak, yenilenebilir enerjiye geçiş ve sürdürülebilir tarım bu krizle mücadelede kilit rol oynuyor.",
+  ],
+  education: [
+    "Etkili öğrenme stratejileri:\n• **Spaced repetition** — aralıklı tekrar\n• **Active recall** — pasif okuma yerine aktif hatırlama\n• **Feynman tekniği** — öğrendiklerini başkasına anlatma\n• **Pomodoro** — 25 dk çalışma, 5 dk mola\n\nHangi konuyu öğrenmek istiyorsunuz?",
+    "Lifelong learning (sürekli öğrenme) modern çağın en kritik becerisi. Teknoloji hızla değişirken mevcut bilginizi güncellemek ve yeni beceriler kazanmak kariyer açısından hayati önem taşıyor.",
   ],
   economy: [
-    "Ekonomi, kıt kaynakların nasıl dağıtıldığını inceler. Mikro ekonomi bireysel kararları, makro ekonomi ise ülke ölçeğindeki büyüme, enflasyon ve işsizlik gibi olguları ele alır.",
-    "Enflasyon, para biriminin satın alma gücünün düşmesidir. Merkez bankaları faiz oranlarını ayarlayarak enflasyonu kontrol altında tutmaya çalışır.",
-    "Türkiye ekonomisi; sanayi, hizmetler ve tarım sektörlerinden oluşan karma bir yapıya sahiptir. İhracat çeşitlendirmesi ve üretim kapasitesi artışı uzun vadeli büyüme için kritik öneme sahiptir.",
+    "Temel ekonomik kavramlar:\n• **Enflasyon** — fiyat düzeyindeki genel artış\n• **Faiz** — paranın kullanım bedeli\n• **GSYİH** — ülkenin toplam üretim değeri\n• **İşsizlik oranı** — istihdam sağlanamayan nüfus oranı\n\nHangi konuyu daha ayrıntılı ele alalım?",
+    "Kişisel finans yönetiminin altın kuralları:\n1. Harcamaları gelirin altında tut\n2. Acil fon oluştur (3-6 aylık gider)\n3. Borçları en yüksek faizliden başlayarak öde\n4. Uzun vadeli yatırım yap ve sabırlı ol",
   ],
   philosophy: [
-    "Felsefe, varlık, bilgi, ahlak ve güzellik gibi temel soruları araştırır. Sokrates'ten Kant'a, Nietzsche'den Wittgenstein'a uzanan düşünce tarihi insanlığın en derin sorularına cevap arar.",
-    "Epistemoloji, bilginin doğasını ve sınırlarını sorgular: 'Neyi bilebiliriz?' sorusunu merkezine alır. Etik ise 'Nasıl yaşamalıyız?' sorusunu araştırır.",
-    "Felsefe okumak, düşünme biçimimizi geliştirmek için harika bir araçtır. Marcus Aurelius'un Düşünceler'i veya Plato'nun diyalogları başlamak için güzel seçenekler.",
+    "Felsefenin temel soruları:\n• **Ontoloji** — Var olmak ne demektir?\n• **Epistemoloji** — Bilgi nedir, sınırları var mı?\n• **Etik** — Nasıl yaşamalıyız?\n• **Estetik** — Güzellik nedir?\n\nSizi en çok hangi soru meşgul ediyor?",
+    "Stoacılık, günümüzde de çok geçerli bir yaşam felsefesi. Temel ilkesi: kontrol edebildiklerine odaklan, edemediklerini kabul et. Marcus Aurelius, Epiktetos ve Seneca bu geleneğin önemli temsilcileri.",
   ],
   help: [
-    "Elbette yardımcı olabilirim! Lütfen sorunuzu biraz daha ayrıntılı açıklar mısınız?",
-    "Sizi dinliyorum. Ne konuda yardıma ihtiyacınız var?",
-    "Tabii ki! Bu konuda elimden gelen her türlü bilgiyi paylaşmaya hazırım.",
+    "Elbette yardımcı olabilirim! Sorunuzu biraz daha açar mısınız?",
+    "Dinliyorum! Hangi konuda yardıma ihtiyacınız var?",
+    "Tabii ki! Bu konuyu birlikte çözelim. Ne yapmanız gerekiyor?",
+  ],
+  question_about_world: [
+    "Dünya hakkında merak ettiğiniz her şeyi sorabilirsiniz. Coğrafya, kültür, politika, bilim — hangi konuya odaklanayım?",
+    "Bu harika bir soru! Birden fazla perspektiften değerlendirelim.",
   ],
   default: [
-    "Bu gerçekten düşündürücü bir konu. Daha fazla detay paylaşırsanız daha kapsamlı bir yanıt verebilirim.",
-    "İlginç bir soru. Birden fazla perspektiften değerlendirmek gerekiyor — hangi boyutunu konuşmak istersiniz?",
-    "Anlıyorum. Bu konuda size en doğru bilgiyi sunmak için biraz daha bağlam alabilir miyim?",
-    "Bu meseleyi farklı açılardan ele almak mümkün. Öncelikle hangi yönünü merak ettiğinizi öğrenebilir miyim?",
-    "Sorunuzu inceliyorum. Konuyu daha iyi anlayabilmek için ek bilgi paylaşabilirseniz çok daha faydalı olabilirim.",
+    "İlginç bir konu! Daha fazla detay paylaşırsanız daha kapsamlı bir yanıt verebilirim.",
+    "Anlıyorum. Bu konuyu daha iyi ele alabilmek için biraz daha bağlam alabilir miyim?",
+    "Bu meseleyi farklı açılardan ele almak mümkün. Öncelikle hangi boyutunu merak ettiğinizi öğrenebilir miyim?",
+    "Güzel bir soru. Konuya ilişkin şunları söyleyebilirim: her sorunun birden fazla doğru yanıtı olabilir; önemli olan doğru soruları sormak!",
+    "Bunu düşünmek için birkaç saniye ayırıyorum... Bu konu gerçekten çok boyutlu. Hangi yönüne odaklanmamı istersiniz?",
   ],
 };
 
-type TopicKey = keyof typeof RESPONSES;
+interface TopicPattern { topic: string; re: RegExp }
 
-interface TopicPattern {
-  topic: TopicKey;
-  patterns: RegExp[];
-}
-
-const TOPIC_PATTERNS: TopicPattern[] = [
-  { topic: "greeting",    patterns: [/merhaba|selam|günaydın|iyi akşam|iyi günler|hey|hi\b/] },
-  { topic: "farewell",    patterns: [/görüşürüz|hoşça kal|güle güle|bye|baybay|vedalaş/] },
-  { topic: "thanks",      patterns: [/teşekkür|sağ ol|eyvallah|çok iyi|harika|süper|mükemmel/] },
-  { topic: "who",         patterns: [/kimsin|ne ?sin|adın ne|kendin|sen kimsin|hakkında|tanıt/] },
-  { topic: "ai",          patterns: [/yapay zeka|makine öğren|derin öğren|llm|gpt|neural|sinir ağı|algoritma|model/] },
-  { topic: "technology",  patterns: [/teknoloji|yazılım|donanım|bilgisayar|uygulama|app|internet|dijital|robot|otomasyon/] },
-  { topic: "programming", patterns: [/programlama|kod|python|javascript|react|node|sql|veri tabanı|backend|frontend|web|api/] },
-  { topic: "science",     patterns: [/bilim|fizik|kimya|biyoloji|astronomi|uzay|evren|deney|hipotez|keşif/] },
-  { topic: "math",        patterns: [/matematik|sayı|hesap|cebir|geometri|istatistik|olasılık|formül|denklem/] },
-  { topic: "history",     patterns: [/tarih|osmanlı|cumhuriyet|savaş|imparatorluk|atatürk|antik|orta çağ|devrim/] },
-  { topic: "health",      patterns: [/sağlık|hastalık|doktor|ilaç|beslenme|diyet|uyku|egzersiz|spor|wellness|ruh sağlığı/] },
-  { topic: "food",        patterns: [/yemek|yiyecek|tarif|mutfak|pişir|malzeme|lezzet|restoran|kahvaltı|akşam yemeği/] },
-  { topic: "sports",      patterns: [/spor|futbol|basketbol|voleybol|tenis|atletizm|olimpiyat|maç|takım|şampiyon/] },
-  { topic: "music",       patterns: [/müzik|şarkı|melodi|enstrüman|konser|albüm|sanatçı|ritim|nota|rock|jazz/] },
-  { topic: "nature",      patterns: [/doğa|çevre|iklim|orman|deniz|dağ|hayvan|bitki|ekosistem|sürdürülebilir/] },
-  { topic: "education",   patterns: [/eğitim|okul|üniversite|ders|öğren|kurs|sınav|öğretmen|bilgi|akademik/] },
-  { topic: "economy",     patterns: [/ekonomi|para|enflasyon|faiz|borsa|yatırım|bütçe|ticaret|piyasa|döviz/] },
-  { topic: "philosophy",  patterns: [/felsefe|anlam|varoluş|ahlak|etik|özgür irade|bilinç|gerçek|hakikat|mutluluk/] },
-  { topic: "help",        patterns: [/yardım|nasıl|ne yapayım|öğrenmek|anla|açıkla|söyle/] },
+const PATTERNS: TopicPattern[] = [
+  { topic: "greeting",    re: /^(merhaba|selam|günaydın|iyi sabahlar|iyi akşamlar|iyi günler|hey|hi)\b/ },
+  { topic: "farewell",    re: /görüşürüz|hoşça kal|güle güle|bye|baybay|iyi geceler|iyi akşamlar.*git/ },
+  { topic: "thanks",      re: /teşekkür|sağ ol|eyvallah|çok iyi|harika|süper|mükemmel|bravo|aferin/ },
+  { topic: "affirmative", re: /^(evet|tamam|tabii|olur|peki|kesinlikle|doğru|elbette|tabi)\b/ },
+  { topic: "negative",    re: /^(hayır|yok|olmaz|istemiyorum|gerek yok)\b/ },
+  { topic: "who",         re: /kimsin|ne ?sin|adın ne|kendin|sen kimsin|hakkında|tanıt|kim ol/ },
+  { topic: "what_can_you_do", re: /ne yapabilir|ne bilir|neler yapabilir|yeteneklerin|özellikler|nasıl yardım/ },
+  { topic: "ai",          re: /yapay zeka|makine öğren|derin öğren|llm|gpt|transformer|neural|sinir ağı|chatgpt|gemini|claude/ },
+  { topic: "technology",  re: /teknoloji|yazılım|donanım|bilgisayar|uygulama|internet|dijital|robot|otomasyon|siber/ },
+  { topic: "programming", re: /programlama|kod|python|javascript|typescript|react|node|sql|veri\s*tabanı|backend|frontend|web\s*geliştir|api|github|git\b/ },
+  { topic: "science",     re: /bilim|fizik|kimya|biyoloji|astronomi|uzay|evren|deney|hipotez|kuantum|atom/ },
+  { topic: "math",        re: /matematik|sayı|hesap|cebir|geometri|istatistik|olasılık|formül|denklem|integral|türev/ },
+  { topic: "history",     re: /tarih|osmanlı|cumhuriyet|savaş|imparatorluk|atatürk|antik|orta çağ|devrim|sanayi/ },
+  { topic: "health",      re: /sağlık|hastalık|doktor|ilaç|beslenme|diyet|uyku|egzersiz|spor yapmak|kalori|vitamin/ },
+  { topic: "food",        re: /yemek|yiyecek|tarif|mutfak|pişir|lezzet|restoran|kahvaltı|akşam yemeği|aperitif/ },
+  { topic: "sports",      re: /spor|futbol|basketbol|voleybol|tenis|atletizm|olimpiyat|maç|şampiyon|liga/ },
+  { topic: "music",       re: /müzik|şarkı|melodi|enstrüman|konser|albüm|sanatçı|ritim|nota|rock|jazz|pop\b/ },
+  { topic: "nature",      re: /doğa|çevre|iklim|orman|deniz|dağ|hayvan|bitki|ekosistem|sürdürülebilir|karbon/ },
+  { topic: "education",   re: /eğitim|okul|üniversite|ders|öğren|kurs|sınav|öğretmen|akademik|burs/ },
+  { topic: "economy",     re: /ekonomi|para|enflasyon|faiz|borsa|yatırım|bütçe|ticaret|piyasa|döviz|tasarruf/ },
+  { topic: "philosophy",  re: /felsefe|anlam|varoluş|ahlak|etik|özgür irade|bilinç|gerçek|hakikat|mutluluk|yaşamın/ },
+  { topic: "question_about_world", re: /neden|nasıl|nerede|ne zaman|niçin|kaç|hangi|kim\b.*(dünya|türkiye|tarih)/ },
+  { topic: "help",        re: /yardım|nasıl yapabilirim|ne yapayım|öğrenmek istiyorum|açıkla|anlat|söyle/ },
 ];
 
-function detectTopic(message: string): TopicKey {
-  const lower = message.toLowerCase();
-  for (const { topic, patterns } of TOPIC_PATTERNS) {
-    if (patterns.some((p) => p.test(lower))) return topic;
+function detectTopic(msg: string): string {
+  const low = msg.toLowerCase().trim();
+  for (const { topic, re } of PATTERNS) {
+    if (re.test(low)) return topic;
   }
   return "default";
 }
 
-function pickRandom<T>(arr: T[]): T {
+function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
-function buildContextualSuffix(userMessage: string, history: Array<{ role: string; content: string }>): string {
-  const words = tokenize(userMessage).filter((w) => w.length > 3);
-  const keyTerms = words.slice(0, 3);
+function extractKeyTerms(msg: string): string[] {
+  const stopwords = new Set(["bir", "ve", "bu", "da", "de", "mi", "mı", "ne", "için", "ile", "çok", "daha", "var", "yok", "ben", "sen", "biz", "siz", "ama", "çünkü", "gibi", "kadar", "olan", "ki"]);
+  return tokenize(msg)
+    .filter(w => w.length > 3 && !stopwords.has(w))
+    .slice(0, 4);
+}
 
-  const contextSuffixes = [
-    keyTerms.length > 0 ? ` Özellikle "${keyTerms.join(", ")}" konusunu ele alırsak daha verimli bir sohbet yürütebiliriz.` : "",
-    history.length > 2 ? " Önceki konuşmamıza bakıldığında bu konunun önemli olduğu anlaşılıyor." : "",
-    " Daha fazla bilgi almak ister misiniz?",
-  ];
+function buildContextSuffix(msg: string, history: Array<{ role: string; content: string }>): string {
+  const terms = extractKeyTerms(msg);
+  const suffixes: string[] = [];
 
-  return contextSuffixes[Math.floor(Math.random() * contextSuffixes.length)] ?? "";
+  if (terms.length > 0 && Math.random() > 0.6) {
+    suffixes.push(`\n\n**"${terms[0]}"** konusunda daha fazla bilgi ister misiniz?`);
+  }
+  if (history.length >= 3 && Math.random() > 0.5) {
+    const followups = [
+      "\n\nBu konuyu biraz daha derinlemesine ele almamı ister misiniz?",
+      "\n\nBaşka sorusu olan bir konu var mı?",
+      "\n\nBu konunun pratik yönleri hakkında da konuşabilir miyiz?",
+    ];
+    suffixes.push(pick(followups));
+  }
+  return suffixes.length > 0 ? suffixes[0]! : "";
 }
 
 export function generateResponse(
@@ -276,31 +241,21 @@ export function generateResponse(
   conversationHistory: Array<{ role: string; content: string }>
 ): string {
   const topic = detectTopic(userMessage);
-  const responses = RESPONSES[topic] ?? RESPONSES["default"]!;
-  let base = pickRandom(responses);
+  const pool = (R[topic] ?? R["default"]!);
+  let response = pick(pool);
 
-  // n-gram katkısı: model yeterlince eğitilmişse ek cümle üret
-  if (memory.totalSamples > 10 && topic === "default") {
-    const inputTokens = tokenize(userMessage);
-    const generated = generateFromContext(inputTokens.slice(-CONTEXT_SIZE), 25);
-    if (generated && generated.trim().length > 15) {
-      const capitalized = generated.charAt(0).toUpperCase() + generated.slice(1);
-      base += " " + capitalized + ".";
-    }
+  // Bağlamsal ek — uzun konuşmalarda
+  if (conversationHistory.length > 0) {
+    response += buildContextSuffix(userMessage, conversationHistory);
   }
 
-  // Uzun konuşmalarda bağlamsal ek
-  if (conversationHistory.length > 1 && Math.random() > 0.5) {
-    base += buildContextualSuffix(userMessage, conversationHistory);
-  }
-
-  return base;
+  return response;
 }
 
 export function getModelStatus() {
   return {
     name: "quantum-ai-0.1",
-    version: "0.1",
+    version: "0.2",
     isReady: true,
     vocabSize: memory.vocab.size,
     totalTrainingSamples: memory.totalSamples,
@@ -308,6 +263,6 @@ export function getModelStatus() {
   };
 }
 
-export function getMemory(): ModelMemory {
+export function getMemory() {
   return memory;
 }

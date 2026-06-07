@@ -182,6 +182,36 @@ pkg.dependencies = resolve(pkg.dependencies);
 if (pkg.scripts) delete pkg.scripts.preinstall;
 pkg.name = "quantum-ai";
 
+// Backend (serverless function) için gerekli runtime deps ekle
+const backendDeps = {
+  "express": "^5.2.1",
+  "cors": "^2.8.6",
+  "bcryptjs": "^3.0.3",
+  "cookie-parser": "^1.4.7",
+  "drizzle-orm": "^0.45.2",
+  "pg": "^8.20.0",
+  "jsonwebtoken": "^9.0.3",
+  "pino": "^9.14.0",
+};
+if (!pkg.dependencies) pkg.dependencies = {};
+for (const [k, v] of Object.entries(backendDeps)) {
+  if (!pkg.dependencies[k]) pkg.dependencies[k] = v;
+}
+
+// Backend devDeps
+const backendDevDeps = {
+  "@types/bcryptjs": "^3.0.0",
+  "@types/cors": "^2.8.19",
+  "@types/cookie-parser": "^1.4.10",
+  "@types/express": "^5.0.6",
+  "@types/jsonwebtoken": "^9.0.10",
+  "@types/pg": "^8.20.0",
+};
+if (!pkg.devDependencies) pkg.devDependencies = {};
+for (const [k, v] of Object.entries(backendDevDeps)) {
+  if (!pkg.devDependencies[k]) pkg.devDependencies[k] = v;
+}
+
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 process.stdout.write("  OK: package.json temizlendi (catalog+workspace cozuldu).\n");
 NODEEOF
@@ -194,7 +224,7 @@ NODEEOF
   # tsconfig.json: extends + references duzelt (Vercel flat deploy icin)
   cat > "$DEPLOY_TMP/tsconfig.json" << 'TSCONFIGEOF'
 {
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "api/**/*", "api-server/src/**/*"],
   "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
   "compilerOptions": {
     "incremental": true,
@@ -218,7 +248,9 @@ NODEEOF
     "types": ["node", "vite/client"],
     "paths": {
       "@/*": ["./src/*"],
-      "@workspace/api-client-react": ["./lib/api-client-react/src/index.ts"]
+      "@workspace/api-client-react": ["./lib/api-client-react/src/index.ts"],
+      "@workspace/db": ["./lib/db/src/index.ts"],
+      "@workspace/api-zod": ["./lib/api-zod/src/index.ts"]
     }
   }
 }
@@ -228,13 +260,19 @@ TSCONFIGEOF
   # pnpm-workspace.yaml'i kopyalama (Vercel'de gerek yok)
   rm -f "$DEPLOY_TMP/pnpm-workspace.yaml"
 
-  # vercel.json guncelle
+  # vercel.json guncelle — /api/* serverless fonksiyona yonlendir
   cat > "$DEPLOY_TMP/vercel.json" << 'VERCELJSON'
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist/public",
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 30,
+      "includeFiles": "api-server/**,lib/db/**,lib/api-zod/**"
+    }
+  },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
@@ -247,7 +285,38 @@ TSCONFIGEOF
   ]
 }
 VERCELJSON
-  echo "  OK: vercel.json guncellendi."
+  echo "  OK: vercel.json guncellendi (serverless API fonksiyonu eklendi)."
+
+  # Vercel serverless API fonksiyonu olustur
+  mkdir -p "$DEPLOY_TMP/api"
+  cat > "$DEPLOY_TMP/api/index.ts" << 'APIEOF'
+// Vercel Serverless API — QuantumAI backend
+// Tüm /api/* isteklerini karşılar
+import express from "express";
+import cors from "cors";
+import type { Request, Response, NextFunction } from "express";
+
+// Rota modüllerini doğrudan içe aktar (pino-http kullanmadan)
+import router from "../api-server/src/routes/index.js";
+
+const app = express();
+
+app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// /api prefix ile tüm rotaları bağla
+app.use("/api", router);
+
+// Hata yakalayıcı
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error(err);
+  res.status(500).json({ error: "Sunucu hatası" });
+});
+
+export default app;
+APIEOF
+  echo "  OK: api/index.ts olusturuldu (Vercel serverless fonksiyon)."
 
   # .gitignore
   cat > "$DEPLOY_TMP/.gitignore" << 'GITIGNORE'
