@@ -187,10 +187,43 @@ process.stdout.write("  OK: package.json temizlendi (catalog+workspace cozuldu).
 NODEEOF
 
   # vite.config.ts: @workspace/api-client-react alias ekle
-  # Bu alias Vercel'de lib/api-client-react/src/index.ts'e isaret eder
   sed -i 's|"@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),|"@assets": path.resolve(import.meta.dirname, "attached_assets"),\n      "@workspace/api-client-react": path.resolve(import.meta.dirname, "lib/api-client-react/src/index.ts"),|' \
     "$DEPLOY_TMP/vite.config.ts"
   echo "  OK: vite.config.ts @workspace/api-client-react alias eklendi."
+
+  # tsconfig.json: extends + references duzelt (Vercel flat deploy icin)
+  cat > "$DEPLOY_TMP/tsconfig.json" << 'TSCONFIGEOF'
+{
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
+  "compilerOptions": {
+    "incremental": true,
+    "isolatedModules": true,
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "module": "esnext",
+    "target": "es2022",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "jsx": "preserve",
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "strictNullChecks": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "useUnknownInCatchVariables": true,
+    "alwaysStrict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@workspace/api-client-react": ["./lib/api-client-react/src/index.ts"]
+    }
+  }
+}
+TSCONFIGEOF
+  echo "  OK: tsconfig.json duzeltildi (extends kaldirildi, paths eklendi)."
 
   # pnpm-workspace.yaml'i kopyalama (Vercel'de gerek yok)
   rm -f "$DEPLOY_TMP/pnpm-workspace.yaml"
