@@ -10,7 +10,8 @@
 #    1) Repo /tmp altına klonlanır — git geçmişi korunur.
 #    2) Klonun içi temizlenir (git rm -rf .)
 #    3) Proje kaynak dosyaları kopyalanır.
-#    4) Commit + push → GitHub güncellenir (--force KULLANILMAZ).
+#    4) workspace:/catalog: bağımlılıkları çözülür, Vercel için temizlenir.
+#    5) Commit + push (--force KULLANILMAZ).
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
@@ -25,8 +26,7 @@ API_SERVER="$WORKSPACE/artifacts/api-server"
 DEPLOY_TMP="/tmp/quantum-deploy-$$"
 
 if [ -z "$GITHUB_PAT" ]; then
-  echo "HATA: GITHUB_PAT secret tanımlı değil."
-  echo "Replit Secrets bölümüne GITHUB_PAT ekleyin ve tekrar deneyin."
+  echo "HATA: GITHUB_PAT secret tanimli degil."
   exit 1
 fi
 
@@ -43,10 +43,9 @@ echo ""
 # ─── PUSH ────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "push" ]; then
 
-  echo "▶ [1/5] GitHub deposu klonlanıyor (geçmiş korunuyor)..."
+  echo "▶ [1/6] GitHub deposu klonlaniyor..."
   rm -rf "$DEPLOY_TMP"
   git clone "$REPO_URL" "$DEPLOY_TMP" --quiet 2>/dev/null || {
-    # Repo boşsa init et
     mkdir -p "$DEPLOY_TMP"
     cd "$DEPLOY_TMP"
     git init -b "$BRANCH"
@@ -58,82 +57,166 @@ if [ "$MODE" = "push" ]; then
   echo "  OK: Klonlandi."
 
   echo ""
-  echo "▶ [2/5] Eski dosyalar temizleniyor..."
+  echo "▶ [2/6] Eski dosyalar temizleniyor..."
   git rm -rf . --quiet 2>/dev/null || true
   echo "  OK: Temizlendi."
 
   echo ""
-  echo "▶ [3/5] Frontend kaynak kodlari kopyalaniyor..."
+  echo "▶ [3/6] Frontend kaynak kodlari kopyalaniyor..."
 
-  # artifacts/quantum-ai/src → src/
-  if [ -d "$QUANTUM_AI/src" ]; then
-    cp -r "$QUANTUM_AI/src" "$DEPLOY_TMP/src"
-    SRC_COUNT=$(find "$DEPLOY_TMP/src" -type f | wc -l | tr -d ' ')
-    echo "  OK: src/ kopyalandi ($SRC_COUNT dosya)."
-  fi
+  # src/
+  cp -r "$QUANTUM_AI/src" "$DEPLOY_TMP/src"
+  echo "  OK: src/ kopyalandi ($(find "$DEPLOY_TMP/src" -type f | wc -l | tr -d ' ') dosya)."
 
-  # artifacts/quantum-ai/public
-  if [ -d "$QUANTUM_AI/public" ]; then
-    cp -r "$QUANTUM_AI/public" "$DEPLOY_TMP/public"
-    echo "  OK: public/ kopyalandi."
-  fi
+  # public/
+  [ -d "$QUANTUM_AI/public" ] && cp -r "$QUANTUM_AI/public" "$DEPLOY_TMP/public" && echo "  OK: public/ kopyalandi."
 
-  # Frontend kök config dosyaları
-  for file in index.html vite.config.ts tailwind.config.ts postcss.config.js tsconfig.json tsconfig.app.json tsconfig.node.json components.json package.json; do
-    if [ -f "$QUANTUM_AI/$file" ]; then
-      cp "$QUANTUM_AI/$file" "$DEPLOY_TMP/$file"
-      echo "  OK: $file kopyalandi."
-    fi
+  # Frontend kök dosyalar (package.json workspace rootundan DEGIL buradan alinir)
+  for file in index.html vite.config.ts tailwind.config.ts postcss.config.js tsconfig.json components.json package.json; do
+    [ -f "$QUANTUM_AI/$file" ] && cp "$QUANTUM_AI/$file" "$DEPLOY_TMP/$file" && echo "  OK: $file kopyalandi."
   done
 
   echo ""
-  echo "▶ [4/5] Backend kaynak kodlari kopyalaniyor..."
+  echo "▶ [4/6] Backend ve lib dosyalari kopyalaniyor..."
 
-  # artifacts/api-server/src → api-server/src/
+  # api-server/
   if [ -d "$API_SERVER/src" ]; then
     mkdir -p "$DEPLOY_TMP/api-server"
     cp -r "$API_SERVER/src" "$DEPLOY_TMP/api-server/src"
-    BE_COUNT=$(find "$DEPLOY_TMP/api-server/src" -type f | wc -l | tr -d ' ')
-    echo "  OK: api-server/src/ kopyalandi ($BE_COUNT dosya)."
+    for f in package.json tsconfig.json build.mjs; do
+      [ -f "$API_SERVER/$f" ] && cp "$API_SERVER/$f" "$DEPLOY_TMP/api-server/$f"
+    done
+    echo "  OK: api-server/ kopyalandi."
   fi
-  for file in package.json tsconfig.json build.mjs; do
-    if [ -f "$API_SERVER/$file" ]; then
-      cp "$API_SERVER/$file" "$DEPLOY_TMP/api-server/$file"
-    fi
-  done
 
-  # lib/ (paylasilan kutuphaneler)
+  # lib/ — api-client-react, api-zod, api-spec, db
   if [ -d "$WORKSPACE/lib" ]; then
     mkdir -p "$DEPLOY_TMP/lib"
-    for libdir in api-spec api-client-react api-zod db; do
-      if [ -d "$WORKSPACE/lib/$libdir" ]; then
-        cp -r "$WORKSPACE/lib/$libdir" "$DEPLOY_TMP/lib/$libdir"
-      fi
+    for libdir in api-client-react api-zod api-spec db; do
+      [ -d "$WORKSPACE/lib/$libdir" ] && cp -r "$WORKSPACE/lib/$libdir" "$DEPLOY_TMP/lib/$libdir"
     done
-    # node_modules ve dist klasorlerini sil
     find "$DEPLOY_TMP/lib" -name "node_modules" -type d -exec rm -rf {} + 2>/dev/null || true
     find "$DEPLOY_TMP/lib" -name "dist" -type d -exec rm -rf {} + 2>/dev/null || true
-    LIB_COUNT=$(find "$DEPLOY_TMP/lib" -type f | wc -l | tr -d ' ')
-    echo "  OK: lib/ kopyalandi ($LIB_COUNT dosya)."
+    echo "  OK: lib/ kopyalandi ($(find "$DEPLOY_TMP/lib" -type f | wc -l | tr -d ' ') dosya)."
   fi
 
-  # OpenAPI spec
-  if [ -f "$WORKSPACE/lib/api-spec/openapi.yaml" ]; then
-    echo "  OK: OpenAPI spec dahil edildi."
-  fi
-
-  echo ""
-  echo "▶ [4b/5] Kok dosyalari kopyalaniyor..."
-
-  # Kök yapılandırma dosyaları
-  for file in package.json pnpm-workspace.yaml tsconfig.json tsconfig.base.json replit.md github-sync.sh; do
-    if [ -f "$WORKSPACE/$file" ]; then
-      cp "$WORKSPACE/$file" "$DEPLOY_TMP/$file"
-      echo "  OK: $file kopyalandi."
-    fi
+  # Diger kök dosyalar (package.json HARIÇ — frontend package.json kullanilacak)
+  for file in tsconfig.base.json replit.md github-sync.sh; do
+    [ -f "$WORKSPACE/$file" ] && cp "$WORKSPACE/$file" "$DEPLOY_TMP/$file" && echo "  OK: $file kopyalandi."
   done
 
-  # .gitignore oluştur
+  echo ""
+  echo "▶ [5/6] Vercel icin paket ve yapilandirma duzenleniyor..."
+
+  # Catalog version haritasi
+  declare -A CATALOG
+  CATALOG["@tailwindcss/vite"]="^4.1.14"
+  CATALOG["@tanstack/react-query"]="^5.90.21"
+  CATALOG["@types/node"]="^25.3.3"
+  CATALOG["@types/react"]="^19.2.0"
+  CATALOG["@types/react-dom"]="^19.2.0"
+  CATALOG["@vitejs/plugin-react"]="^5.0.4"
+  CATALOG["class-variance-authority"]="^0.7.1"
+  CATALOG["clsx"]="^2.1.1"
+  CATALOG["framer-motion"]="^12.23.24"
+  CATALOG["lucide-react"]="^0.545.0"
+  CATALOG["react"]="19.1.0"
+  CATALOG["react-dom"]="19.1.0"
+  CATALOG["tailwind-merge"]="^3.3.1"
+  CATALOG["tailwindcss"]="^4.1.14"
+  CATALOG["vite"]="^7.3.2"
+  CATALOG["wouter"]="^3.3.5"
+  CATALOG["zod"]="^3.25.76"
+  CATALOG["@replit/vite-plugin-cartographer"]="^0.5.1"
+  CATALOG["@replit/vite-plugin-runtime-error-modal"]="^0.0.6"
+
+  # Node script ile package.json temizle: catalog: → gercek versiyon, workspace:* kaldir
+  DEPLOY_PATH="$DEPLOY_TMP" node --input-type=module << 'NODEEOF'
+import { readFileSync, writeFileSync } from "fs";
+
+const deployPath = process.env.DEPLOY_PATH;
+
+const catalog = {
+  "@tailwindcss/vite": "^4.1.14",
+  "@tanstack/react-query": "^5.90.21",
+  "@types/node": "^25.3.3",
+  "@types/react": "^19.2.0",
+  "@types/react-dom": "^19.2.0",
+  "@vitejs/plugin-react": "^5.0.4",
+  "class-variance-authority": "^0.7.1",
+  "clsx": "^2.1.1",
+  "framer-motion": "^12.23.24",
+  "lucide-react": "^0.545.0",
+  "react": "19.1.0",
+  "react-dom": "19.1.0",
+  "tailwind-merge": "^3.3.1",
+  "tailwindcss": "^4.1.14",
+  "vite": "^7.3.2",
+  "wouter": "^3.3.5",
+  "zod": "^3.25.76",
+  "@replit/vite-plugin-cartographer": "^0.5.1",
+  "@replit/vite-plugin-runtime-error-modal": "^0.0.6",
+};
+
+const pkgPath = `${deployPath}/package.json`;
+const raw = readFileSync(pkgPath, "utf8");
+const pkg = JSON.parse(raw);
+
+const resolve = (deps) => {
+  if (!deps) return deps;
+  const out = {};
+  for (const [k, v] of Object.entries(deps)) {
+    if (v === "workspace:*" || v.startsWith("workspace:")) continue;
+    if (v === "catalog:") {
+      if (catalog[k]) out[k] = catalog[k];
+      else process.stderr.write("WARN: catalog yok: " + k + "\n");
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+};
+
+pkg.devDependencies = resolve(pkg.devDependencies);
+pkg.dependencies = resolve(pkg.dependencies);
+if (pkg.scripts) delete pkg.scripts.preinstall;
+pkg.name = "quantum-ai";
+
+writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+process.stdout.write("  OK: package.json temizlendi (catalog+workspace cozuldu).\n");
+NODEEOF
+
+  # vite.config.ts: @workspace/api-client-react alias ekle
+  # Bu alias Vercel'de lib/api-client-react/src/index.ts'e isaret eder
+  sed -i 's|"@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),|"@assets": path.resolve(import.meta.dirname, "attached_assets"),\n      "@workspace/api-client-react": path.resolve(import.meta.dirname, "lib/api-client-react/src/index.ts"),|' \
+    "$DEPLOY_TMP/vite.config.ts"
+  echo "  OK: vite.config.ts @workspace/api-client-react alias eklendi."
+
+  # pnpm-workspace.yaml'i kopyalama (Vercel'de gerek yok)
+  rm -f "$DEPLOY_TMP/pnpm-workspace.yaml"
+
+  # vercel.json guncelle
+  cat > "$DEPLOY_TMP/vercel.json" << 'VERCELJSON'
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist/public",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
+  ]
+}
+VERCELJSON
+  echo "  OK: vercel.json guncellendi."
+
+  # .gitignore
   cat > "$DEPLOY_TMP/.gitignore" << 'GITIGNORE'
 node_modules/
 dist/
@@ -146,21 +229,19 @@ dist/
 .upm/
 *.log
 GITIGNORE
-  echo "  OK: .gitignore olusturuldu."
 
   echo ""
-  echo "▶ [5/5] Commit & Push yapiliyor..."
+  echo "▶ [6/6] Commit & Push yapiliyor..."
   cd "$DEPLOY_TMP"
   git add -A
 
   CHANGED=$(git status --porcelain | wc -l)
   if [ "$CHANGED" -eq 0 ]; then
-    echo "  Gonderirlecek degisiklik yok — her sey guncel."
+    echo "  Gonderirlecek degisiklik yok."
   else
     echo "  $CHANGED dosya degisti."
     git commit -m "$COMMIT_MSG"
-    git push origin "$BRANCH" 2>&1
-
+    git push origin "$BRANCH"
     echo ""
     echo "════════════════════════════════════════════════════"
     echo "  BASARILI! GitHub guncellendi."
@@ -169,7 +250,6 @@ GITIGNORE
     echo "════════════════════════════════════════════════════"
   fi
 
-  # Temizlik
   cd "$WORKSPACE"
   rm -rf "$DEPLOY_TMP"
   echo "  OK: Gecici dosyalar temizlendi."
@@ -186,7 +266,6 @@ elif [ "$MODE" = "pull" ]; then
   echo "▶ [2/2] src/ ve public/ aktariliyor..."
   [ -d "$DEPLOY_TMP/src" ]    && rm -rf "$QUANTUM_AI/src"    && cp -r "$DEPLOY_TMP/src"    "$QUANTUM_AI/src"
   [ -d "$DEPLOY_TMP/public" ] && rm -rf "$QUANTUM_AI/public" && cp -r "$DEPLOY_TMP/public" "$QUANTUM_AI/public"
-
   [ -d "$DEPLOY_TMP/api-server/src" ] && rm -rf "$API_SERVER/src" && cp -r "$DEPLOY_TMP/api-server/src" "$API_SERVER/src"
 
   cd "$WORKSPACE"
